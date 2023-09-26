@@ -110,6 +110,7 @@ class WebServerAuth(WebServer):
 
             # Conserver information dans la session au besoin
             session = await get_session(request)
+            session.changed()
             try:
                 session[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
                 session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
@@ -232,7 +233,8 @@ class WebServerAuth(WebServer):
                 box = nacl.secret.SecretBox(self.__session_encryption_key)
                 cookie_encrypted = box.encrypt(cookie_session['challenge'].encode('utf-8'))
                 cookie_b64 = base64.b64encode(cookie_encrypted).decode('utf-8')
-                response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True, samesite='Strict', domain='/')
+                # response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True, samesite='Strict', domain='/')
+                response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True)
             except KeyError:
                 pass  # Pas de cookie
 
@@ -242,7 +244,8 @@ class WebServerAuth(WebServer):
         async with self.__semaphore_verifier_usager:
             session = await get_session(request)
             session.invalidate()
-            return web.HTTPTemporaryRedirect('/millegrilles')
+            headers = {'Cache-Control': 'no-store'}
+            return web.HTTPTemporaryRedirect('/millegrilles', headers=headers)
 
     async def verifier_usager_noauth(self, request: Request):
         return await self.__verifier_usager(request, noauth=True)
@@ -268,7 +271,10 @@ class WebServerAuth(WebServer):
                 ConstantesWeb.HEADER_USER_ID: user_id,
             }
 
-            return web.HTTPOk(headers=headers)
+            if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
+                return web.HTTPOk(headers=headers)
+
+            return web.HTTPUnauthorized(headers=headers)
 
     async def verifier_client_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
