@@ -254,6 +254,8 @@ class WebServerAuth(WebServer):
         return await self.__verifier_usager(request)
 
     async def __verifier_usager(self, request: Request, noauth=False):
+        headers_base = {'Cache-Control': 'no-store'}
+
         async with self.__semaphore_verifier_usager:
             session = await get_session(request)
             try:
@@ -263,16 +265,27 @@ class WebServerAuth(WebServer):
                 # L'usager n'est pas authentifie
                 if noauth:
                     # On ne bloque pas l'acces
-                    return web.HTTPOk()
-                return web.HTTPUnauthorized()
+                    return web.HTTPOk(headers=headers_base)
+                return web.HTTPUnauthorized(headers=headers_base)
+
+            if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
+                auth_status = '1'
+            else:
+                auth_status = '0'
 
             headers = {
+                'Cache-Control': 'no-store',
                 ConstantesWeb.HEADER_USER_NAME: user_name,
                 ConstantesWeb.HEADER_USER_ID: user_id,
+                ConstantesWeb.HEADER_AUTH: auth_status,
             }
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
                 return web.HTTPOk(headers=headers)
+            elif noauth is True:
+                # Utilise pour socket.io, ne pas retourner info usager
+                # (indique implicitement que l'authentificaiton est completee)
+                return web.HTTPOk(headers=headers_base)
 
             return web.HTTPUnauthorized(headers=headers)
 
