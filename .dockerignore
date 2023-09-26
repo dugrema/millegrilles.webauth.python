@@ -1,0 +1,11 @@
+tmp/
+client/
+node_modules/
+sessions/
+
+.git
+.gitignore
+*.local
+*.development
+
+*.tar.gz
