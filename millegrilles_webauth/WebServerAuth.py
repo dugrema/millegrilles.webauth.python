@@ -104,6 +104,11 @@ class WebServerAuth(WebServer):
 
             del resultat_compte['__original']
             compte_usager = resultat_compte['compte']
+            if compte_usager is None:
+                # Le compte est vide, retourner reponse directement
+                reponse_signee, correlation_id = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE,
+                                                                                             compte_usager)
+                return web.json_response(reponse_signee)
             # reponse_originale = compte_usager['__original']
 
             reponse_dict = dict()
@@ -119,6 +124,7 @@ class WebServerAuth(WebServer):
 
             session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION] = resultat_compte[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
             reponse_dict[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE]
+            reponse_dict['methodesDisponibles'] = {'certificat': True}
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
                 # Si session deja active
@@ -128,16 +134,16 @@ class WebServerAuth(WebServer):
                         ConstantesWebAuth.REPONSE_DELEGATIONS_DATE]
                     reponse_dict[ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION] = compte_usager[
                         ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION]
+                    reponse_dict[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
                 except KeyError:
                     pass  # OK
 
-            if generer_challenge:
-                try:
-                    reponse_dict[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
-                    session[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
-                    reponse_dict['methodesDisponibles'] = {'certificat': True}
-                except KeyError:
-                    pass  # OK
+            # if generer_challenge:
+            #     try:
+            #         reponse_dict[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
+            #         session[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
+            #     except KeyError:
+            #         pass  # OK
 
             # Tenter de transmettre certificat si nouvelle activation - TODO
             #     // Trouver activation. Privilegier activation du nouveau certificat (fingerprintPk)
