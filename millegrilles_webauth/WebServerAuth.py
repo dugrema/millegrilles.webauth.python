@@ -1,12 +1,16 @@
 import asyncio
 import base64
 import datetime
+import json
 import nacl.secret
 import nacl.utils
+import secrets
 
 from aiohttp import web
 from aiohttp.web_request import Request
 from aiohttp_session import get_session
+from certvalidator.errors import PathValidationError
+from cryptography.exceptions import InvalidSignature
 
 import logging
 
@@ -116,15 +120,16 @@ class WebServerAuth(WebServer):
             # Conserver information dans la session au besoin
             session = await get_session(request)
             session.changed()
-            try:
-                session[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
-                session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
-            except KeyError:
-                pass  # OK
 
-            session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION] = resultat_compte[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
-            reponse_dict[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE]
-            reponse_dict['methodesDisponibles'] = {'certificat': True}
+            try:
+                # Conserver passkey et user_id pour verifier lors de l'authentification
+                session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION] = resultat_compte[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
+                session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
+                session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
+                reponse_dict[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE]
+                reponse_dict['methodesDisponibles'] = {'certificat': True}
+            except KeyError:
+                pass  # L'usager n'a aucune cle webauthn
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
                 # Si session deja active
@@ -135,6 +140,28 @@ class WebServerAuth(WebServer):
                     reponse_dict[ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION] = compte_usager[
                         ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION]
                     reponse_dict[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
+                except KeyError:
+                    pass  # OK
+            else:
+                try:
+                    # Verifier si on a une authentification directe disponible pour la cle publique (PK) courante
+                    fingerprint_pk = message['fingerprintPkCourant']
+                    activations = resultat_compte['activations']
+                    activation_cle = activations[fingerprint_pk]
+                    if activation_cle.get('certificat') is not None:
+                        reponse_dict['certificat'] = activation_cle['certificat']
+
+                    # Generer un challenge d'auth via certificat
+                    challenge = secrets.token_urlsafe(32)
+                    session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE] = challenge
+                    reponse_dict['challenge_certificat'] = challenge
+
+                    # Flags qui indiquent au client qu'il peut s'authentifier avec certificat sans webauthn
+                    reponse_dict['methodesDisponibles'] = {
+                        'certificat': True,
+                        'activation': True,
+                    }
+
                 except KeyError:
                     pass  # OK
 
@@ -182,50 +209,77 @@ class WebServerAuth(WebServer):
     async def authentifier_usager(self, request: Request):
         async with self.__semaphore_authentifier:
             params = await request.json()
-
-            # TODO - verifier webauthn
-
             session = await get_session(request)
+
+            # Determiner si on authentifie via webauthn ou activation (certificat)
+            challenge_webauthn = None
+            reponse_dict = None
+            reponse_parsed = None
+            nom_usager = None
+
             try:
-                user_id = session[ConstantesWebAuth.SESSION_USER_ID]
                 passkey_authentication = session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
-                challenge = passkey_authentication['ast']['challenge']
-            except KeyError:
+                challenge_webauthn = passkey_authentication['ast']['challenge']
+                user_id = session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE]
+                nom_usager = session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE]
+                # TODO - verifier webauthn avant appel serveur
+                # if not valide:
+                #     challenge_webauthn = None
+                #     reponse_dict = None
+            except (TypeError, KeyError):
+                # Verifier si on une activation par certificat (bypass webauthn)
+                # Le message doit etre bien formatte et signe
+                try:
+                    enveloppe = await self.etat.validateur_message.verifier(params)
+                    contenu = json.loads(params['contenu'])
+                    challenge_certificate = contenu[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE]
+                except (KeyError, PathValidationError, InvalidSignature):
+                    reponse_dict = None
+                else:
+                    # Le challenge recu doit correspondre challenge conserve dans la session
+                    challenge_session = session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE]
+                    if challenge_session == challenge_certificate:
+                        user_id = enveloppe.get_user_id
+                        nom_usager = enveloppe.subject_common_name
+                        reponse_dict = {'userId': user_id, 'auth': True}
+                    else:
+                        # Acces refuse
+                        reponse_dict = None
+
+            if challenge_webauthn:
+                # Authentifier via webauthn
+                commande = {
+                    'userId': user_id,
+                    'hostname': request.host,
+                    'challenge': challenge_webauthn,
+                    'reponseWebauthn': params,
+                }
+
+                producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
+                reponse_auth = await producer.executer_commande(
+                    commande, Constantes.DOMAINE_CORE_MAITREDESCOMPTES, 'authentifierWebauthn',
+                    exchange=Constantes.SECURITE_PUBLIC)
+
+                reponse_parsed = reponse_auth.parsed
+                if reponse_parsed['ok'] is not True:
+                    return web.HTTPUnauthorized()
+
+                reponse_dict = {'userId': user_id, 'auth': True}
+
+                try:
+                    reponse_dict['certificat'] = reponse_parsed['certificat']
+                except KeyError:
+                    pass  # Ok
+
+            if not reponse_dict:
+                # Acces refuse
                 reponse, correlation_id = self.etat.formatteur_message.signer_message(
                     Constantes.KIND_REPONSE, {'ok': False, 'err': 'session non initialisee via get_usager'})
                 return web.json_response(reponse, status=401)
 
-            commande = {
-                'userId': user_id,
-                'hostname': request.host,
-                'challenge': challenge,
-                'reponseWebauthn': params,
-            }
-
-            producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
-            reponse_auth = await producer.executer_commande(
-                commande, Constantes.DOMAINE_CORE_MAITREDESCOMPTES, 'authentifierWebauthn',
-                exchange=Constantes.SECURITE_PUBLIC)
-
-            reponse_parsed = reponse_auth.parsed
-            if reponse_parsed['ok'] is not True:
-                return web.HTTPUnauthorized()
-
-            reponse_dict = {'userId': user_id, 'auth': True}
-
-            try:
-                reponse_dict['certificat'] = reponse_parsed['certificat']
-            except KeyError:
-                pass  # Ok
-
             session[ConstantesWebAuth.SESSION_AUTHENTIFIEE] = True
-
-            #     if(resultatWebauthn.cookie) {
-            #       debug("Retourner cookie de session %O", resultatWebauthn.cookie)
-            #       session.cookieSession = resultatWebauthn.cookie
-            #       session.save()
-            #       reponse.cookie_disponible = true
-            #     }
+            session[ConstantesWebAuth.SESSION_USER_ID] = user_id
+            session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
 
             # Signer la reponse
             reponse_signee, correlation = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE, reponse_dict)
@@ -234,15 +288,19 @@ class WebServerAuth(WebServer):
 
             try:
                 cookie_session = reponse_parsed['cookie']
-                now = int(datetime.datetime.utcnow().timestamp())
-                max_age = cookie_session['expiration'] - now
-                box = nacl.secret.SecretBox(self.__session_encryption_key)
-                cookie_encrypted = box.encrypt(cookie_session['challenge'].encode('utf-8'))
-                cookie_b64 = base64.b64encode(cookie_encrypted).decode('utf-8')
-                # response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True, samesite='Strict', domain='/')
-                response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True)
-            except KeyError:
+            except (TypeError, KeyError):
                 pass  # Pas de cookie
+            else:
+                now = int(datetime.datetime.utcnow().timestamp())
+                try:
+                    max_age = cookie_session['expiration'] - now
+                    box = nacl.secret.SecretBox(self.__session_encryption_key)
+                    cookie_encrypted = box.encrypt(cookie_session['challenge'].encode('utf-8'))
+                    cookie_b64 = base64.b64encode(cookie_encrypted).decode('utf-8')
+                    # response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True, samesite='Strict', domain='/')
+                    response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True)
+                except KeyError:
+                    pass  # Pas de cookie
 
             return response
 
