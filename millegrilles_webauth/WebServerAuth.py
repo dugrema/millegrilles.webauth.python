@@ -153,6 +153,10 @@ class WebServerAuth(WebServer):
 
                     # Generer un challenge d'auth via certificat
                     challenge = secrets.token_urlsafe(32)
+
+                    session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[
+                        ConstantesWebAuth.SESSION_USER_ID]
+                    session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
                     session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE] = challenge
                     reponse_dict['challenge_certificat'] = challenge
 
@@ -207,6 +211,16 @@ class WebServerAuth(WebServer):
             return web.json_response(reponse_signee)
 
     async def authentifier_usager(self, request: Request):
+        """
+        Authentification de l'usager.
+
+        Noter qu'il faut faire un appel a get_usager avec le nom_usager pour initialiser la session prealablement.
+        C'est la seule methode pour obtenir correctement un challenge d'authentification (webauthn ou activation avec certificat).
+
+        :param request:
+        :return:
+        """
+
         async with self.__semaphore_authentifier:
             params = await request.json()
             session = await get_session(request)
@@ -239,9 +253,15 @@ class WebServerAuth(WebServer):
                     # Le challenge recu doit correspondre challenge conserve dans la session
                     challenge_session = session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE]
                     if challenge_session == challenge_certificate:
+                        user_id_challenge = session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE]
+                        nom_usager_challenge = session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE]
                         user_id = enveloppe.get_user_id
                         nom_usager = enveloppe.subject_common_name
-                        reponse_dict = {'userId': user_id, 'auth': True}
+                        if user_id == user_id_challenge and nom_usager == nom_usager_challenge:
+                            reponse_dict = {'userId': user_id, 'auth': True}
+                        else:
+                            # Acces refuse
+                            reponse_dict = None
                     else:
                         # Acces refuse
                         reponse_dict = None
