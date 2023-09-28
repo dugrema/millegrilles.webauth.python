@@ -142,32 +142,32 @@ class WebServerAuth(WebServer):
                     reponse_dict[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
                 except KeyError:
                     pass  # OK
-            else:
-                try:
-                    # Verifier si on a une authentification directe disponible pour la cle publique (PK) courante
-                    fingerprint_pk = message['fingerprintPkCourant']
-                    activations = resultat_compte['activations']
-                    activation_cle = activations[fingerprint_pk]
-                    if activation_cle.get('certificat') is not None:
-                        reponse_dict['certificat'] = activation_cle['certificat']
 
-                    # Generer un challenge d'auth via certificat
-                    challenge = secrets.token_urlsafe(32)
+            try:
+                # Verifier si on a une authentification directe disponible pour la cle publique (PK) courante
+                fingerprint_pk = message['fingerprintPkCourant']
+                activations = resultat_compte['activations']
+                activation_cle = activations[fingerprint_pk]
+                if activation_cle.get('certificat') is not None:
+                    reponse_dict['certificat'] = activation_cle['certificat']
 
-                    session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[
-                        ConstantesWebAuth.SESSION_USER_ID]
-                    session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
-                    session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE] = challenge
-                    reponse_dict['challenge_certificat'] = challenge
+                # Generer un challenge d'auth via certificat
+                challenge = secrets.token_urlsafe(32)
 
-                    # Flags qui indiquent au client qu'il peut s'authentifier avec certificat sans webauthn
-                    reponse_dict['methodesDisponibles'] = {
-                        'certificat': True,
-                        'activation': True,
-                    }
+                session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[
+                    ConstantesWebAuth.SESSION_USER_ID]
+                session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
+                session[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE] = challenge
+                reponse_dict['challenge_certificat'] = challenge
 
-                except KeyError:
-                    pass  # OK
+                # Flags qui indiquent au client qu'il peut s'authentifier avec certificat sans webauthn
+                reponse_dict['methodesDisponibles'] = {
+                    'certificat': True,
+                    'activation': True,
+                }
+
+            except KeyError:
+                pass  # OK
 
             # if generer_challenge:
             #     try:
@@ -223,6 +223,16 @@ class WebServerAuth(WebServer):
 
         async with self.__semaphore_authentifier:
             params = await request.json()
+
+            try:
+                # Extraire le contenu des params si c'est un message signe
+                enveloppe = await self.etat.validateur_message.verifier(params)
+                params = json.loads(params['contenu'])
+                signature_ok = True
+            except (KeyError, PathValidationError, InvalidSignature):
+                enveloppe = None
+                signature_ok = False
+
             session = await get_session(request)
 
             # Determiner si on authentifie via webauthn ou activation (certificat)
@@ -231,22 +241,11 @@ class WebServerAuth(WebServer):
             reponse_parsed = None
             nom_usager = None
 
-            try:
-                passkey_authentication = session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
-                challenge_webauthn = passkey_authentication['ast']['challenge']
-                user_id = session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE]
-                nom_usager = session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE]
-                # TODO - verifier webauthn avant appel serveur
-                # if not valide:
-                #     challenge_webauthn = None
-                #     reponse_dict = None
-            except (TypeError, KeyError):
+            if signature_ok and enveloppe:
                 # Verifier si on une activation par certificat (bypass webauthn)
                 # Le message doit etre bien formatte et signe
                 try:
-                    enveloppe = await self.etat.validateur_message.verifier(params)
-                    contenu = json.loads(params['contenu'])
-                    challenge_certificate = contenu[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE]
+                    challenge_certificate = params[ConstantesWebAuth.SESSION_CERTIFICATE_CHALLENGE]
                 except (KeyError, PathValidationError, InvalidSignature):
                     reponse_dict = None
                 else:
@@ -266,30 +265,44 @@ class WebServerAuth(WebServer):
                         # Acces refuse
                         reponse_dict = None
 
-            if challenge_webauthn:
-                # Authentifier via webauthn
-                commande = {
-                    'userId': user_id,
-                    'hostname': request.host,
-                    'challenge': challenge_webauthn,
-                    'reponseWebauthn': params,
-                }
-
-                producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
-                reponse_auth = await producer.executer_commande(
-                    commande, Constantes.DOMAINE_CORE_MAITREDESCOMPTES, 'authentifierWebauthn',
-                    exchange=Constantes.SECURITE_PUBLIC)
-
-                reponse_parsed = reponse_auth.parsed
-                if reponse_parsed['ok'] is not True:
-                    return web.HTTPUnauthorized()
-
-                reponse_dict = {'userId': user_id, 'auth': True}
-
+            if reponse_dict is None:
+                # On n'est pas en mode d'authentification avec certificat / activation de compte
                 try:
-                    reponse_dict['certificat'] = reponse_parsed['certificat']
-                except KeyError:
-                    pass  # Ok
+                    # Verifier si on utilise la signature webauthn
+                    passkey_authentication = session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
+                    challenge_webauthn = passkey_authentication['ast']['challenge']
+                    user_id = session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE]
+                    nom_usager = session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE]
+                    # TODO - verifier webauthn avant appel serveur
+                    # if not valide:
+                    #     challenge_webauthn = None
+                    #     reponse_dict = None
+                except (TypeError, KeyError):
+                    reponse_dict = None
+                else:
+                    # Authentifier via webauthn
+                    commande = {
+                        'userId': user_id,
+                        'hostname': request.host,
+                        'challenge': challenge_webauthn,
+                        'reponseWebauthn': params,
+                    }
+
+                    producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
+                    reponse_auth = await producer.executer_commande(
+                        commande, Constantes.DOMAINE_CORE_MAITREDESCOMPTES, 'authentifierWebauthn',
+                        exchange=Constantes.SECURITE_PUBLIC)
+
+                    reponse_parsed = reponse_auth.parsed
+                    if reponse_parsed['ok'] is not True:
+                        return web.HTTPUnauthorized()
+
+                    reponse_dict = {'userId': user_id, 'auth': True}
+
+                    try:
+                        reponse_dict['certificat'] = reponse_parsed['certificat']
+                    except KeyError:
+                        pass  # Ok
 
             if not reponse_dict:
                 # Acces refuse
