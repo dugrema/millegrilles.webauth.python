@@ -282,9 +282,8 @@ class WebServerAuth(WebServer):
                     if reponse_parsed['ok'] is not True:
                         return web.HTTPUnauthorized()
 
-                    # Supprimer les challenge apres succes pour eviter reutilisation
+                    # Supprimer les challenges apres succes pour eviter reutilisation
                     del session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
-                    del passkey_authentication['ast']['challenge']
 
                     reponse_dict = {'userId': user_id, 'auth': True}
 
