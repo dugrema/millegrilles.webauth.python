@@ -143,11 +143,25 @@ class WebServerAuth(WebServer):
                 except KeyError:
                     pass  # OK
 
+            # Verifier si on a une authentification directe disponible pour la cle publique (PK) courante
+            fingerprints = list()
+            # Verifier si on a une activation pour la nouvelle cle, sinon pour la cle courante
             try:
-                # Verifier si on a une authentification directe disponible pour la cle publique (PK) courante
-                fingerprint_pk = message['fingerprintPkCourant']
+                fingerprints.append(message['fingerprintPkNouveau'])
+            except KeyError:
+                pass  #
+            try:
+                fingerprints.append(message['fingerprintPkCourant'])
+            except KeyError:
+                pass  #
+
+            for fingerprint_pk in fingerprints:
                 activations = resultat_compte['activations']
-                activation_cle = activations[fingerprint_pk]
+                try:
+                    activation_cle = activations[fingerprint_pk]
+                except KeyError:
+                    continue   # Pas d'activation pour ce certificat
+
                 if activation_cle.get('certificat') is not None:
                     reponse_dict['certificat'] = activation_cle['certificat']
 
@@ -165,37 +179,8 @@ class WebServerAuth(WebServer):
                     'certificat': True,
                     'activation': True,
                 }
+                break
 
-            except KeyError:
-                pass  # OK
-
-            # if generer_challenge:
-            #     try:
-            #         reponse_dict[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
-            #         session[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_REGISTRATION_CHALLENGE]
-            #     except KeyError:
-            #         pass  # OK
-
-            # Tenter de transmettre certificat si nouvelle activation - TODO
-            #     // Trouver activation. Privilegier activation du nouveau certificat (fingerprintPk)
-            #     // Fallback sur certificat courant (fingerprintCourant)
-            #     const activations = infoUsager.activations || {}
-            #     let activation = activations[fingerprintPk]
-            #     if(!activation) {
-            #       activation = activations[fingerprintCourant]
-            #     }
-            #     if(activation) {
-            #       // Filtrer methodes d'activation
-            #       reponse.activation = {...activation, fingerprint: activation.fingerprint_pk, valide: true}
-            #       if(reponse.activation.certificat) {
-            #         // Extraire le certificat vers top du compte
-            #         reponse.certificat = reponse.activation.certificat
-            #         delete reponse.activation.certificat
-            #       }
-            #       reponse.methodesDisponibles = {certificat: true}
-            #     } else if(socket.modeProtege === true) {
-            #       reponse.methodesDisponibles = {certificat: true}
-            #     }
             try:
                 reponse_certificat = resultat[1]
                 reponse_dict['certificat'] = reponse_certificat['certificat']
