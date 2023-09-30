@@ -411,6 +411,10 @@ class WebServerAuth(WebServer):
 
     async def verifier_client_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
+
+            for key, value in request.headers.items():
+                self.__logger.debug("TLS Header %s = %s" % (key, value))
+
             return web.HTTPUnauthorized()
 
     def activer_session(self, session, user_id: str, nom_usager: str):
