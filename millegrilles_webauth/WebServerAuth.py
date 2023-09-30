@@ -2,6 +2,8 @@ import asyncio
 import json
 import secrets
 
+from typing import Optional
+
 from aiohttp import web
 from aiohttp.web_request import Request
 from aiohttp_session import get_session
@@ -26,10 +28,15 @@ class WebServerAuth(WebServer):
         self.__semaphore_authentifier = asyncio.BoundedSemaphore(value=2)
         self.__semaphore_verifier_usager = asyncio.BoundedSemaphore(value=5)
         self.__semaphore_verifier_tls = asyncio.BoundedSemaphore(value=10)
-        self.__cookie_manager = SessionCookieManager(etat)
+        self.__cookie_manager = None
 
     def get_nom_app(self) -> str:
         return ConstantesWebAuth.APP_NAME
+
+    async def setup(self, configuration: Optional[dict] = None, stop_event: Optional[asyncio.Event] = None):
+        await super().setup(configuration, stop_event)
+        redis_session = await self._connect_redis()
+        self.__cookie_manager = SessionCookieManager(redis_session, self._etat)
 
     async def setup_socketio(self):
         # Ne pas initialiser socket.io
@@ -318,7 +325,7 @@ class WebServerAuth(WebServer):
             except (TypeError, KeyError):
                 pass  # Pas de cookie
             else:
-                self.__cookie_manager.set_cookie(cookie_session, response)
+                await self.__cookie_manager.set_cookie(nom_usager, cookie_session, response)
 
             return response
 

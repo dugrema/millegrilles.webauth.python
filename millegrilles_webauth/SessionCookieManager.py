@@ -10,6 +10,7 @@ import logging
 
 from aiohttp.web_request import Request
 from aiohttp.web_response import Response
+from redis.asyncio.client import Redis
 
 from typing import Union
 
@@ -22,17 +23,27 @@ SESSION_COOKIE_ENCRYPTION_KEY = b'01234567890123456789012345678901'
 
 class SessionCookieManager:
 
-    def __init__(self, etat: EtatWeb):
+    def __init__(self, redis_client: Redis, etat: EtatWeb):
         self.__logger = logging.getLogger(__name__ + '.' + self.__class__.__name__)
+        self.__redis_client = redis_client
         self.__etat = etat
         self.__session_cookie_encryption_Key = SESSION_COOKIE_ENCRYPTION_KEY
 
-    def set_cookie(self, cookie: dict, response: Response):
+    async def set_cookie(self, nom_usager: str, cookie: dict, response: Response):
         now = int(datetime.datetime.utcnow().timestamp())
         try:
             max_age = cookie['expiration'] - now
 
             cookie_bytes = json.dumps(cookie).encode('utf-8')
+
+            # Conserver le cookie dans redis
+            try:
+                # Ajouter le nom d'usager pour eviter appel a CoreMaitreDesComptes sur reactivation de la session
+                cookie_redis = cookie.copy()
+                cookie_redis['nomUsager'] = nom_usager
+                await self.conserver_cookie_redis(cookie_redis)
+            except Exception:
+                self.__logger.exception("Erreur set cookie dans redis")
 
             box = nacl.secret.SecretBox(self.__session_cookie_encryption_Key)
             cookie_encrypted = box.encrypt(cookie_bytes)
@@ -64,11 +75,26 @@ class SessionCookieManager:
         """
         try:
             message_json = self.extraire_info_cookie(request)
+            challenge = message_json['challenge']
         except Exception as e:
             self.__logger.debug('Erreur dechiffrage cookie : %s' % str(e))
             return False
 
         # Verifier avec Redis
+        try:
+            redis_key = f'mgsession.{challenge}'
+            cookie_redis = await self.__redis_client.get(redis_key)
+            cookie_json = json.loads(cookie_redis)
+
+            if cookie_json.get('invalide') is True:
+                return False  # Le cookie a ete desactive
+
+            expiration = cookie_json['expiration']
+            if expiration > datetime.datetime.utcnow().timestamp():
+                # Ok, cookie dans redis est valide
+                return cookie_json
+        except Exception:
+            self.__logger.exception("Erreur chargement cookie dans redis")
 
         # Verifier avec CoreMaitreDesComptes
         try:
@@ -84,21 +110,49 @@ class SessionCookieManager:
         if reponse.parsed.get('ok') is True:
             nom_usager = reponse.parsed['nomUsager']
             message_json['nomUsager'] = nom_usager
+
+            # Remettre cookie dans redis
+            try:
+                await self.conserver_cookie_redis(message_json)
+            except Exception:
+                self.__logger.exception("Erreur set cookie dans redis")
+
             return message_json
 
         return False
 
+    async def conserver_cookie_redis(self, cookie: dict):
+        if cookie.get('nomUsager') is None:
+            raise ValueError('nomUsager est requis')
+
+        max_age = cookie['expiration'] - int(datetime.datetime.utcnow().timestamp())
+        challenge = cookie['challenge']
+        redis_key = f'mgsession.{challenge}'
+        cookie_redis_bytes = json.dumps(cookie).encode('utf-8')
+
+        self.__logger.debug("Set cookie %s dans redis" % redis_key)
+        await self.__redis_client.set(redis_key, cookie_redis_bytes, ex=max_age)
+
     async def desactiver_cookie(self, request: Request, response: Response):
-        # Desactiver le cookie
+        # Desactiver le cookie dans le navigateur
         response.set_cookie(ConstantesWebAuth.COOKIE_MG_SESSION, '', max_age=0)
 
         try:
             message_json = self.extraire_info_cookie(request)
+            challenge = message_json["challenge"]
         except Exception as e:
             self.__logger.debug('Erreur dechiffrage cookie : %s' % str(e))
             return
 
-        # Desactiver dans le back-end
+        # Bloquer dans redis (on garde 5 minutes pour eviter multiples rappels au back-end par navigateur)
+        try:
+            redis_key = f'mgsession.{challenge}'
+            info_bytes = json.dumps({'invalide': True}).encode('utf-8')
+            await self.__redis_client.set(redis_key, info_bytes, ex=300)
+        except Exception:
+            self.__logger.exception("Erreur invalidation cookie dans redis")
+
+        # Desactiver dans CoreMaitreDesComptes
         try:
             producer = await asyncio.wait_for(self.__etat.producer_wait(), timeout=0.3)
         except asyncio.TimeoutError:
