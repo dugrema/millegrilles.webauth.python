@@ -17,3 +17,5 @@ SESSION_CERTIFICATE_CHALLENGE = 'certificate_challenge'
 
 REPONSE_DELEGATIONS_DATE = 'delegations_date'
 REPONSE_DELEGATIONS_VERSION = 'delegations_version'
+
+COOKIE_MG_SESSION = 'mgsession'

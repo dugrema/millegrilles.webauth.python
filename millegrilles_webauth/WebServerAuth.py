@@ -1,9 +1,5 @@
 import asyncio
-import base64
-import datetime
 import json
-import nacl.secret
-import nacl.utils
 import secrets
 
 from aiohttp import web
@@ -18,9 +14,7 @@ from millegrilles_messages.messages import Constantes
 from millegrilles_web.WebServer import WebServer
 from millegrilles_web import Constantes as ConstantesWeb
 from millegrilles_webauth import Constantes as ConstantesWebAuth
-
-
-SESSION_COOKIE_ENCRYPTION_KEY = b'01234567890123456789012345678901'
+from millegrilles_webauth.SessionCookieManager import SessionCookieManager
 
 
 class WebServerAuth(WebServer):
@@ -32,7 +26,7 @@ class WebServerAuth(WebServer):
         self.__semaphore_authentifier = asyncio.BoundedSemaphore(value=2)
         self.__semaphore_verifier_usager = asyncio.BoundedSemaphore(value=5)
         self.__semaphore_verifier_tls = asyncio.BoundedSemaphore(value=10)
-        self.__session_encryption_key = SESSION_COOKIE_ENCRYPTION_KEY
+        self.__cookie_manager = SessionCookieManager(etat)
 
     def get_nom_app(self) -> str:
         return ConstantesWebAuth.APP_NAME
@@ -133,6 +127,20 @@ class WebServerAuth(WebServer):
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
                 # Si session deja active
+                session_active = True
+            else:
+                etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
+                if etat_session is False:
+                    session_active = False
+                elif nom_usager == etat_session.get('nomUsager'):
+                    # Nom usager match - la session vient d'etre activee avec le cookie de session
+                    user_id = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
+                    self.activer_session(session, user_id, nom_usager)
+                    session_active = True
+                else:
+                    session_active = False
+
+            if session_active:
                 reponse_dict['auth'] = True
                 try:
                     reponse_dict[ConstantesWebAuth.REPONSE_DELEGATIONS_DATE] = compte_usager[
@@ -298,9 +306,7 @@ class WebServerAuth(WebServer):
                     Constantes.KIND_REPONSE, {'ok': False, 'err': 'session non initialisee via get_usager'})
                 return web.json_response(reponse, status=401)
 
-            session[ConstantesWebAuth.SESSION_AUTHENTIFIEE] = True
-            session[ConstantesWebAuth.SESSION_USER_ID] = user_id
-            session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
+            self.activer_session(session, user_id, nom_usager)
 
             # Signer la reponse
             reponse_signee, correlation = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE, reponse_dict)
@@ -312,51 +318,73 @@ class WebServerAuth(WebServer):
             except (TypeError, KeyError):
                 pass  # Pas de cookie
             else:
-                now = int(datetime.datetime.utcnow().timestamp())
-                try:
-                    max_age = cookie_session['expiration'] - now
-                    box = nacl.secret.SecretBox(self.__session_encryption_key)
-                    cookie_encrypted = box.encrypt(cookie_session['challenge'].encode('utf-8'))
-                    cookie_b64 = base64.b64encode(cookie_encrypted).decode('utf-8')
-                    # response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True, samesite='Strict', domain='/')
-                    response.set_cookie('mgsession', cookie_b64, max_age=max_age, httponly=True, secure=True)
-                except KeyError:
-                    pass  # Pas de cookie
+                self.__cookie_manager.set_cookie(cookie_session, response)
 
             return response
 
     async def deconnecter_usager(self, request: Request):
         async with self.__semaphore_verifier_usager:
+
+            # Desactiver session
             session = await get_session(request)
             session.invalidate()
             headers = {'Cache-Control': 'no-store'}
-            return web.HTTPTemporaryRedirect('/millegrilles', headers=headers)
+
+            # Retirer cookie session
+            response = web.HTTPTemporaryRedirect('/millegrilles', headers=headers)
+            await self.__cookie_manager.desactiver_cookie(request, response)
+
+            return response
 
     async def verifier_usager_noauth(self, request: Request):
+        """
+        Verifier si la session usager existe. Retourne toujours HTTP Status 200.
+        :param request:
+        :return: Response avec HTTP Status 200
+        """
         return await self.__verifier_usager(request, noauth=True)
 
     async def verifier_usager(self, request: Request):
+        """
+        Verifier si la session usager exite.
+        :param request:
+        :return: Response avec HTTP Status 200 si existe, 401 si n'existe pas.
+        """
         return await self.__verifier_usager(request)
 
     async def __verifier_usager(self, request: Request, noauth=False):
         headers_base = {'Cache-Control': 'no-store'}
 
+        user_name = None
+        user_id = None
+
         async with self.__semaphore_verifier_usager:
             session = await get_session(request)
-            try:
-                user_id = session[ConstantesWebAuth.SESSION_USER_ID]
-                user_name = session[ConstantesWebAuth.SESSION_USER_NAME]
-            except KeyError:
-                # L'usager n'est pas authentifie
-                if noauth:
-                    # On ne bloque pas l'acces
-                    return web.HTTPOk(headers=headers_base)
-                return web.HTTPUnauthorized(headers=headers_base)
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
-                auth_status = '1'
+                try:
+                    user_id = session[ConstantesWebAuth.SESSION_USER_ID]
+                    user_name = session[ConstantesWebAuth.SESSION_USER_NAME]
+                    auth_status = '1'
+                except KeyError:
+                    # L'usager n'est pas authentifie
+                    if noauth:
+                        # On ne bloque pas l'acces
+                        return web.HTTPOk(headers=headers_base)
+                    return web.HTTPUnauthorized(headers=headers_base)
+
             else:
-                auth_status = '0'
+                etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
+                if etat_session is False:
+                    auth_status = '0'
+                elif isinstance(etat_session, dict):
+                    # etat_session est un str (nom_usager) - la session vient d'etre activee avec le cookie de session
+                    user_name = etat_session['nomUsager']
+                    user_id = etat_session['user_id']
+                    self.activer_session(session, user_id, user_name)
+                    auth_status = '1'
+                else:
+                    auth_status = '0'
 
             headers = {
                 'Cache-Control': 'no-store',
@@ -378,3 +406,8 @@ class WebServerAuth(WebServer):
         async with self.__semaphore_verifier_tls:
             return web.HTTPUnauthorized()
 
+    def activer_session(self, session, user_id: str, nom_usager: str):
+        self.__logger.debug("Activer session pour %s/%s" % (nom_usager, user_id))
+        session[ConstantesWebAuth.SESSION_AUTHENTIFIEE] = True
+        session[ConstantesWebAuth.SESSION_USER_ID] = user_id
+        session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
