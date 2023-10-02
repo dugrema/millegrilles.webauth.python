@@ -1,6 +1,7 @@
 import asyncio
 import json
 import secrets
+from urllib.parse import unquote
 
 from typing import Optional
 
@@ -13,6 +14,7 @@ from cryptography.exceptions import InvalidSignature
 import logging
 
 from millegrilles_messages.messages import Constantes
+from millegrilles_messages.messages.EnveloppeCertificat import EnveloppeCertificat
 from millegrilles_web.WebServer import WebServer
 from millegrilles_web import Constantes as ConstantesWeb
 from millegrilles_webauth import Constantes as ConstantesWebAuth
@@ -411,11 +413,42 @@ class WebServerAuth(WebServer):
 
     async def verifier_client_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
-
+            self.__logger.debug("TLS URL %s" % request.url)
             for key, value in request.headers.items():
                 self.__logger.debug("TLS Header %s = %s" % (key, value))
 
-            return web.HTTPUnauthorized()
+            try:
+                verified = request.headers['VERIFIED']
+                if verified != 'SUCCESS':
+                    # Invalide - aurait du etre rejete par nginx
+                    return web.HTTPBadRequest()
+                cert = request.headers['X-SSL-CERT']
+            except KeyError:
+                self.__logger.warning("Requete tls sans certificat : %s" % request.url)
+                return web.HTTPBadRequest()
+
+            try:
+                cert = unquote(cert)
+                enveloppe = EnveloppeCertificat.from_pem(cert)
+            except Exception:
+                # Erreur chargement PEM
+                return web.HTTPBadRequest()
+
+            # if verified != 'SUCCESS':
+            #     # Reload le certificat complet (chaine) a partir de redis ou CorePki
+            #     fingerprint = enveloppe.fingerprint
+            #     enveloppe = await self.etat.charger_certificat(fingerprint)
+            #
+            #     if not enveloppe.est_verifie:
+            #         # Certificat invalide
+            #         return web.HTTPUnauthorized()
+
+            # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
+            exchanges = enveloppe.get_exchanges
+            if exchanges is None:
+                return web.HTTPUnauthorized()
+
+            return web.HTTPOk()
 
     def activer_session(self, session, user_id: str, nom_usager: str):
         self.__logger.debug("Activer session pour %s/%s" % (nom_usager, user_id))
