@@ -1,7 +1,7 @@
 import asyncio
 import json
 import secrets
-from urllib.parse import unquote
+from urllib.parse import urlparse, parse_qs, unquote
 
 from typing import Optional
 
@@ -19,6 +19,7 @@ from millegrilles_web.WebServer import WebServer
 from millegrilles_web import Constantes as ConstantesWeb
 from millegrilles_webauth import Constantes as ConstantesWebAuth
 from millegrilles_webauth.SessionCookieManager import SessionCookieManager
+from millegrilles_web.JwtUtils import get_headers, verify
 
 
 class WebServerAuth(WebServer):
@@ -57,6 +58,9 @@ class WebServerAuth(WebServer):
 
         # Routes client TLS (certificat x509)
         self.app.router.add_get(f'/auth/verifier_client_tls', self.verifier_client_tls),
+
+        # Routes speciales
+        self.app.router.add_get(f'/auth/verifier_fuuid_jwt', self.verifier_fuuid_jwt),
 
     async def get_usager(self, request: Request):
         async with self.__semaphore_authentifier:
@@ -406,7 +410,7 @@ class WebServerAuth(WebServer):
                 return web.HTTPOk(headers=headers)
             elif noauth is True:
                 # Utilise pour socket.io, ne pas retourner info usager
-                # (indique implicitement que l'authentificaiton est completee)
+                # (indique implicitement que l'authentification est completee)
                 return web.HTTPOk(headers=headers_base)
 
             return web.HTTPUnauthorized(headers=headers)
@@ -455,3 +459,62 @@ class WebServerAuth(WebServer):
         session[ConstantesWebAuth.SESSION_AUTHENTIFIEE] = True
         session[ConstantesWebAuth.SESSION_USER_ID] = user_id
         session[ConstantesWebAuth.SESSION_USER_NAME] = nom_usager
+
+    async def verifier_fuuid_jwt(self, request: Request):
+        async with self.__semaphore_verifier_usager:
+            headers_base = {'Cache-Control': 'no-store'}
+            auth_status = '0'
+            session = await get_session(request)
+
+            if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
+                try:
+                    user_id = session[ConstantesWebAuth.SESSION_USER_ID]
+                    user_name = session[ConstantesWebAuth.SESSION_USER_NAME]
+                    auth_status = '1'
+
+                    headers = {
+                        'Cache-Control': 'no-store',
+                        ConstantesWeb.HEADER_USER_NAME: user_name,
+                        ConstantesWeb.HEADER_USER_ID: user_id,
+                        ConstantesWeb.HEADER_AUTH: auth_status,
+                    }
+
+                    # Ok, session existe.
+                    return web.HTTPOk(headers=headers)
+                except KeyError:
+                    # L'usager n'est pas authentifie. Utiliser le token JWT.
+                    pass
+
+            # La session n'existe pas
+            # Extraire token et valider avec certificat de signature
+            try:
+                url_original = urlparse(request.headers['X-Original-URI'])
+                query_params = parse_qs(url_original.query)
+                token = query_params.get('jwt')[0]
+                headers_token = get_headers(token)
+                fingerprint_certificat = headers_token['kid']
+            except Exception as e:
+                self.__logger.debug("Erreur verification token JWT : %s" % str(e))
+                return web.HTTPUnauthorized(headers=headers_base)
+
+            # Charger le certificat
+            try:
+                enveloppe = await self.etat.charger_certificat(fingerprint_certificat)
+            except Exception:
+                self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (fingerprint_certificat, str(e)))
+                return web.HTTPUnauthorized(headers=headers_base)
+
+            try:
+                resultat = verify(enveloppe, token)
+                user_id = resultat['userId']
+                headers = {
+                    'Cache-Control': 'no-store',
+                    ConstantesWeb.HEADER_USER_ID: user_id,
+                    # ConstantesWeb.HEADER_USER_NAME: user_name,
+                    ConstantesWeb.HEADER_AUTH: auth_status,
+                }
+                return web.HTTPOk(headers=headers)
+            except Exception as e:
+                self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (
+                    fingerprint_certificat, str(e)))
+                return web.HTTPUnauthorized(headers=headers_base)
