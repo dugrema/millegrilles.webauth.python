@@ -10,6 +10,7 @@ from aiohttp.web_request import Request
 from aiohttp_session import get_session
 from certvalidator.errors import PathValidationError
 from cryptography.exceptions import InvalidSignature
+from cryptography.x509.extensions import ExtensionNotFound
 
 import logging
 
@@ -448,9 +449,20 @@ class WebServerAuth(WebServer):
             #         return web.HTTPUnauthorized()
 
             # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
-            exchanges = enveloppe.get_exchanges
-            if exchanges is None:
-                return web.HTTPUnauthorized()
+            try:
+                exchanges = enveloppe.get_exchanges
+                if exchanges is None:
+                    return web.HTTPUnauthorized()
+            except ExtensionNotFound:
+                # Verifier si c'est un certificat nginx (seule exception)
+                try:
+                    roles = enveloppe.get_roles
+                    if 'nginx' not in roles:
+                        self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+                        return web.HTTPUnauthorized()
+                except ExtensionNotFound:
+                    self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+                    return web.HTTPUnauthorized()
 
             return web.HTTPOk()
 
@@ -500,7 +512,7 @@ class WebServerAuth(WebServer):
             # Charger le certificat
             try:
                 enveloppe = await self.etat.charger_certificat(fingerprint_certificat)
-            except Exception:
+            except Exception as e:
                 self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (fingerprint_certificat, str(e)))
                 return web.HTTPUnauthorized(headers=headers_base)
 
