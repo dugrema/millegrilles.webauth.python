@@ -402,10 +402,12 @@ class WebServerAuth(WebServer):
 
             headers = {
                 'Cache-Control': 'no-store',
-                ConstantesWeb.HEADER_USER_NAME: user_name,
-                ConstantesWeb.HEADER_USER_ID: user_id,
                 ConstantesWeb.HEADER_AUTH: auth_status,
             }
+            if user_id:
+                headers[ConstantesWeb.HEADER_USER_ID] = user_id
+            if user_name:
+                headers[ConstantesWeb.HEADER_USER_NAME] = user_name
 
             if session.get(ConstantesWebAuth.SESSION_AUTHENTIFIEE) is True:
                 return web.HTTPOk(headers=headers)
