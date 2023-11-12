@@ -163,3 +163,25 @@ class SessionCookieManager:
                                          action='supprimerCookieSession',
                                          exchange=Constantes.SECURITE_PUBLIC,
                                          nowait=True)
+
+    async def supprimer_cookies_usager(self, user_id):
+        # Note : inefficient, reviser pour utiliser RediSearch avec index
+
+        # Supprimer les cookies de longue duree
+        for key in await self.__redis_client.keys('mgsession.*'):
+            cookie_str = await self.__redis_client.get(key)
+            cookie = json.loads(cookie_str)
+            if cookie.get('user_id') == user_id:
+                self.__logger.debug("Supprimer cookie %s" % key)
+                await self.__redis_client.expire(key, 0)
+
+        # Supprimer les sessions
+        for key in await self.__redis_client.keys('auth.aiohttp_*'):
+            session_str = await self.__redis_client.get(key)
+            session = json.loads(session_str)
+            try:
+                if session['session']['userId'] == user_id:
+                    self.__logger.debug("Supprimer cookie %s" % key)
+                    await self.__redis_client.expire(key, 0)
+            except KeyError:
+                pass

@@ -2,8 +2,9 @@ import logging
 
 from cryptography.x509.extensions import ExtensionNotFound
 
+from millegrilles_messages.messages import Constantes as ConstantesMillegrilles
 from millegrilles_messages.messages.MessagesThread import MessagesThread
-from millegrilles_messages.messages.MessagesModule import MessageProducerFormatteur, MessageWrapper
+from millegrilles_messages.messages.MessagesModule import MessageProducerFormatteur, MessageWrapper, RessourcesConsommation
 
 from millegrilles_web.Commandes import CommandHandler
 
@@ -14,15 +15,24 @@ class CommandWebAuthHandler(CommandHandler):
         super().__init__(web_app)
         self.__logger = logging.getLogger(__name__ + '.' + self.__class__.__name__)
 
+        self.__cookie_manager = None
+
+    def set_cookie_manager(self, cookie_manager):
+        self.__cookie_manager = cookie_manager
+
+    async def supprimer_cookies_user_id(self, message: MessageWrapper):
+        user_id = message.parsed['userId']
+        return await self.__cookie_manager.supprimer_cookies_usager(user_id)
+
     def configurer_consumers(self, messages_thread: MessagesThread):
         super().configurer_consumers(messages_thread)
 
-        # res_evenements = RessourcesConsommation(self.callback_reply_q, channel_separe=True, est_asyncio=True)
-        # res_evenements.ajouter_rk(
-        #     Constantes.SECURITE_PUBLIC,
-        #     f'evenement.{Constantes.DOMAINE_MAITRE_DES_CLES}.{Constantes.EVENEMENT_MAITREDESCLES_CERTIFICAT}', )
-        #
-        # messages_thread.ajouter_consumer(res_evenements)
+        res_evenements = RessourcesConsommation(self.callback_reply_q, channel_separe=True, est_asyncio=True)
+        res_evenements.ajouter_rk(
+            ConstantesMillegrilles.SECURITE_PUBLIC,
+            f'evenement.{ConstantesMillegrilles.DOMAINE_CORE_MAITREDESCOMPTES}.{ConstantesMillegrilles.EVENEMENT_EVICT_USAGER}', )
+
+        messages_thread.ajouter_consumer(res_evenements)
 
     async def traiter_commande(self, producer: MessageProducerFormatteur, message: MessageWrapper):
         routing_key = message.routing_key
@@ -51,14 +61,11 @@ class CommandWebAuthHandler(CommandHandler):
         except ExtensionNotFound:
             delegation_globale = None
 
-        # if type_message == 'evenement':
-        #     if exchange == Constantes.SECURITE_PUBLIC:
-        #         if action == Constantes.EVENEMENT_CEDULE:
-        #             await self.traiter_cedule(producer, message)
-        #             return False
-        #         if action == Constantes.EVENEMENT_MAITREDESCLES_CERTIFICAT:
-        #             await self.socket_io_handler.recevoir_certificat_maitredescles(message)
-        #             return False
+        if type_message == 'evenement':
+            if exchange == ConstantesMillegrilles.SECURITE_PUBLIC:
+                if action == ConstantesMillegrilles.EVENEMENT_EVICT_USAGER:
+                    await self.supprimer_cookies_user_id(message)
+                    return False
 
         # Fallback sur comportement de la super classe
         return await super().traiter_commande(producer, message)

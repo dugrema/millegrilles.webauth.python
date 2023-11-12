@@ -1,4 +1,4 @@
-FROM docker.maple.maceroc.com:5000/millegrilles_web_python:2023.10.2
+FROM docker.maple.maceroc.com:5000/millegrilles_web_python:2023.11.0
 
 ENV CA_PEM=/var/opt/millegrilles/configuration/pki.millegrille.cert \
     CERT_PEM=/var/opt/millegrilles/secrets/pki.webauth.cert \

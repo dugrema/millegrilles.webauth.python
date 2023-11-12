@@ -41,6 +41,7 @@ class WebServerAuth(WebServer):
         await super().setup(configuration, stop_event)
         redis_session = await self._connect_redis()
         self.__cookie_manager = SessionCookieManager(redis_session, self._etat)
+        self._commandes.set_cookie_manager(self.__cookie_manager)
 
     async def setup_socketio(self):
         # Ne pas initialiser socket.io
@@ -532,3 +533,6 @@ class WebServerAuth(WebServer):
                 self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (
                     fingerprint_certificat, str(e)))
                 return web.HTTPUnauthorized(headers=headers_base)
+
+    async def supprimer_cookies_usager(self, user_id):
+        return await self.__cookie_manager.supprimer_cookies_usager(user_id)
