@@ -23,11 +23,14 @@ from millegrilles_webauth.SessionCookieManager import SessionCookieManager
 from millegrilles_web.JwtUtils import get_headers, verify
 
 
+DUREE_SESSION = 3_600 * 48
+
+
 class WebServerAuth(WebServer):
 
     def __init__(self, etat, commandes):
         self.__logger = logging.getLogger(__name__ + '.' + self.__class__.__name__)
-        super().__init__(ConstantesWebAuth.WEBAPP_PATH, etat, commandes)
+        super().__init__(ConstantesWebAuth.WEBAPP_PATH, etat, commandes, duree_session=DUREE_SESSION)
 
         self.__semaphore_authentifier = asyncio.BoundedSemaphore(value=2)
         self.__semaphore_verifier_usager = asyncio.BoundedSemaphore(value=5)
