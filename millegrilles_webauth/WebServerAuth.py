@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import secrets
 from urllib.parse import urlparse, parse_qs, unquote
@@ -23,7 +24,8 @@ from millegrilles_webauth.SessionCookieManager import SessionCookieManager
 from millegrilles_web.JwtUtils import get_headers, verify
 
 
-DUREE_SESSION = 3_600 * 48
+# DUREE_SESSION = 3_600 * 48
+DUREE_SESSION = 3_600
 
 
 class WebServerAuth(WebServer):
@@ -252,6 +254,8 @@ class WebServerAuth(WebServer):
             reponse_parsed = None
             nom_usager = None
 
+            mode_validation = None
+
             if signature_ok and enveloppe:
                 # Verifier si on une activation par certificat (bypass webauthn)
                 # Le message doit etre bien formatte et signe
@@ -269,6 +273,7 @@ class WebServerAuth(WebServer):
                         nom_usager = enveloppe.subject_common_name
                         if user_id == user_id_challenge and nom_usager == nom_usager_challenge:
                             reponse_dict = {'userId': user_id, 'auth': True}
+                            mode_validation = 'activation'
                         else:
                             # Acces refuse
                             reponse_dict = None
@@ -312,6 +317,7 @@ class WebServerAuth(WebServer):
                     del session[ConstantesWebAuth.SESSION_PASSKEY_AUTHENTICATION]
 
                     reponse_dict = {'userId': user_id, 'auth': True}
+                    mode_validation = 'webauthn'
 
                     try:
                         reponse_dict['certificat'] = reponse_parsed['certificat']
@@ -334,8 +340,24 @@ class WebServerAuth(WebServer):
             try:
                 cookie_session = reponse_parsed['cookie']
             except (TypeError, KeyError):
-                pass  # Pas de cookie
-            else:
+                if mode_validation == 'activation':
+                    # Creer un cookie d'activation
+                    try:
+                        duree_session = int(params['dureeSession'])
+                    except (ValueError, KeyError):
+                        duree_session = 86400
+                    hostname = request.host
+                    expiration = datetime.datetime.utcnow() + datetime.timedelta(seconds=duree_session)
+                    cookie_session = {
+                        'user_id': user_id,
+                        'challenge': challenge_certificate,
+                        'expiration': int(expiration.timestamp()),
+                        'hostname': hostname,
+                    }
+                else:
+                    cookie_session = None  # Pas de cookie
+
+            if cookie_session is not None:
                 await self.__cookie_manager.set_cookie(nom_usager, cookie_session, response)
 
             return response
