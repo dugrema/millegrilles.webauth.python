@@ -141,6 +141,7 @@ class WebServerAuth(WebServer):
                 session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
                 session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
                 reponse_dict[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE]
+                reponse_dict[ConstantesWebAuth.SESSION_GENERIC_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_GENERIC_CHALLENGE]
                 reponse_dict['methodesDisponibles'] = {'certificat': True}
             except KeyError:
                 pass  # L'usager n'a aucune cle webauthn
