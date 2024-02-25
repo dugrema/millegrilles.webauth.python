@@ -15,6 +15,7 @@ SESSION_GENERIC_CHALLENGE = 'generic_challenge'
 SESSION_AUTHENTICATION_CHALLENGE = 'authentication_challenge'
 SESSION_REGISTRATION_CHALLENGE = 'registration_challenge'
 SESSION_CERTIFICATE_CHALLENGE = 'certificate_challenge'
+SESSION_WEBAUTH_CREDENTIAL_COUNT = 'webauth_credentials_count'
 
 REPONSE_DELEGATIONS_DATE = 'delegations_date'
 REPONSE_DELEGATIONS_VERSION = 'delegations_version'

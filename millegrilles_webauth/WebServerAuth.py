@@ -141,7 +141,6 @@ class WebServerAuth(WebServer):
                 session[ConstantesWebAuth.SESSION_USER_ID_CHALLENGE] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
                 session[ConstantesWebAuth.SESSION_USER_NAME_CHALLENGE] = nom_usager
                 reponse_dict[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_AUTHENTICATION_CHALLENGE]
-                reponse_dict[ConstantesWebAuth.SESSION_GENERIC_CHALLENGE] = resultat_compte[ConstantesWebAuth.SESSION_GENERIC_CHALLENGE]
                 reponse_dict['methodesDisponibles'] = {'certificat': True}
             except KeyError:
                 pass  # L'usager n'a aucune cle webauthn
@@ -169,6 +168,8 @@ class WebServerAuth(WebServer):
                     reponse_dict[ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION] = compte_usager[
                         ConstantesWebAuth.REPONSE_DELEGATIONS_VERSION]
                     reponse_dict[ConstantesWebAuth.SESSION_USER_ID] = compte_usager[ConstantesWebAuth.SESSION_USER_ID]
+                    reponse_dict[ConstantesWebAuth.SESSION_WEBAUTH_CREDENTIAL_COUNT] = resultat_compte.get(
+                        ConstantesWebAuth.SESSION_WEBAUTH_CREDENTIAL_COUNT)
                 except KeyError:
                     pass  # OK
 
