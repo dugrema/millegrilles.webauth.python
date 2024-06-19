@@ -65,6 +65,7 @@ class WebServerAuth(WebServer):
 
         # Routes client TLS (certificat x509)
         self.app.router.add_get(f'/auth/verifier_client_tls', self.verifier_client_tls),
+        self.app.router.add_get(f'/auth/verifier_usager_tls', self.verifier_usager_tls),
 
         # Routes speciales
         self.app.router.add_get(f'/auth/verifier_fuuid_jwt', self.verifier_fuuid_jwt),
@@ -495,6 +496,51 @@ class WebServerAuth(WebServer):
                     return web.HTTPUnauthorized()
 
             return web.HTTPOk()
+
+    async def verifier_usager_tls(self, request: Request):
+        async with self.__semaphore_verifier_tls:
+            self.__logger.debug("TLS URL %s" % request.url)
+            for key, value in request.headers.items():
+                self.__logger.debug("TLS Header %s = %s" % (key, value))
+
+            try:
+                verified = request.headers['VERIFIED']
+                if verified != 'SUCCESS':
+                    # Invalide - aurait du etre rejete par nginx
+                    return web.HTTPBadRequest()
+                cert = request.headers['X-SSL-CERT']
+            except KeyError:
+                self.__logger.warning("Requete tls sans certificat : %s" % request.url)
+                return web.HTTPBadRequest()
+
+            try:
+                cert = unquote(cert)
+                enveloppe = EnveloppeCertificat.from_pem(cert)
+            except Exception:
+                # Erreur chargement PEM
+                return web.HTTPBadRequest()
+
+            # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
+            # Verifier si c'est un certificat nginx (seule exception)
+            try:
+                user_id = enveloppe.get_user_id
+                user_name = enveloppe.subject_common_name
+                if user_name is None or user_id is None:
+                    self.__logger.debug("Certificat usager sans user_id - REFUSE")
+                    return web.HTTPUnauthorized()
+            except ExtensionNotFound:
+                self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+                return web.HTTPUnauthorized()
+
+            auth_status = '1'
+            headers = {
+                'Cache-Control': 'no-store',
+                ConstantesWeb.HEADER_AUTH: auth_status,
+                ConstantesWeb.HEADER_USER_ID: user_id,
+                ConstantesWeb.HEADER_USER_NAME: user_name,
+            }
+
+            return web.HTTPOk(headers=headers)
 
     def activer_session(self, session, user_id: str, nom_usager: str):
         self.__logger.debug("Activer session pour %s/%s" % (nom_usager, user_id))
