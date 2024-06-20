@@ -385,7 +385,11 @@ class WebServerAuth(WebServer):
         :param request:
         :return: Response avec HTTP Status 200
         """
-        return await self.__verifier_usager(request, noauth=True)
+        try:
+            return await self.__verifier_usager(request, noauth=True)
+        except Exception:
+            self.__logger.exception("Erreur verifier usager")
+            return web.HTTPForbidden()
 
     async def verifier_usager(self, request: Request):
         """
@@ -393,7 +397,11 @@ class WebServerAuth(WebServer):
         :param request:
         :return: Response avec HTTP Status 200 si existe, 401 si n'existe pas.
         """
-        return await self.__verifier_usager(request)
+        try:
+            return await self.__verifier_usager(request)
+        except:
+            self.__logger.exception("Erreur verifier usager")
+            return web.HTTPForbidden()
 
     async def __verifier_usager(self, request: Request, noauth=False):
         headers_base = {'Cache-Control': 'no-store'}
@@ -414,7 +422,7 @@ class WebServerAuth(WebServer):
                     if noauth:
                         # On ne bloque pas l'acces
                         return web.HTTPOk(headers=headers_base)
-                    return web.HTTPUnauthorized(headers=headers_base)
+                    return web.HTTPForbidden(headers=headers_base)
 
             else:
                 etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
@@ -445,7 +453,7 @@ class WebServerAuth(WebServer):
                 # (indique implicitement que l'authentification est completee)
                 return web.HTTPOk(headers=headers_base)
 
-            return web.HTTPUnauthorized(headers=headers)
+            return web.HTTPForbidden(headers=headers)
 
     async def verifier_client_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
