@@ -716,6 +716,7 @@ def verifier_certificat_usager(enveloppe: EnveloppeCertificat) -> (str, str):
         if 'navigateur' not in roles:
             LOGGER.debug("Certificat usager sans role navigateur - REFUSE")
             raise CertificatPasUsager()
+        return user_id, user_name
     except ExtensionNotFound:
         LOGGER.debug("Certificat sans user_id/roles - REFUSE")
         raise CertificatPasUsager()
