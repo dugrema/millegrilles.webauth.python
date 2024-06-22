@@ -37,7 +37,7 @@ class WebAuthAppMain(WebAppMain):
 
     def parse(self) -> argparse.Namespace:
         args = super().parse()
-        adjust_logging(LOGGING_NAMES_WEB, args)
+        adjust_logging(LOGGING_NAMES, args)
         return args
 
 
