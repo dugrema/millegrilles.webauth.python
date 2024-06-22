@@ -27,6 +27,8 @@ from millegrilles_web.JwtUtils import get_headers, verify
 # DUREE_SESSION = 3_600 * 48
 DUREE_SESSION = 3_600
 
+LOGGER = logging.getLogger(__name__)
+
 
 class WebServerAuth(WebServer):
 
@@ -66,6 +68,7 @@ class WebServerAuth(WebServer):
         # Routes client TLS (certificat x509)
         self.app.router.add_get(f'/auth/verifier_client_tls', self.verifier_client_tls),
         self.app.router.add_get(f'/auth/verifier_usager_tls', self.verifier_usager_tls),
+        self.app.router.add_get(f'/auth/verifier_any_tls', self.verifier_any_tls),
 
         # Routes speciales
         self.app.router.add_get(f'/auth/verifier_fuuid_jwt', self.verifier_fuuid_jwt),
@@ -457,7 +460,7 @@ class WebServerAuth(WebServer):
 
     async def verifier_client_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
-            self.__logger.debug("TLS URL %s" % request.url)
+            self.__logger.debug("verifier_client_tls URL %s" % request.url)
             for key, value in request.headers.items():
                 self.__logger.debug("TLS Header %s = %s" % (key, value))
 
@@ -465,18 +468,18 @@ class WebServerAuth(WebServer):
                 verified = request.headers['VERIFIED']
                 if verified != 'SUCCESS':
                     # Invalide - aurait du etre rejete par nginx
-                    return web.HTTPBadRequest()
+                    return web.HTTPUnauthorized()
                 cert = request.headers['X-SSL-CERT']
             except KeyError:
                 self.__logger.warning("Requete tls sans certificat : %s" % request.url)
-                return web.HTTPBadRequest()
+                return web.HTTPUnauthorized()
 
             try:
                 cert = unquote(cert)
                 enveloppe = EnveloppeCertificat.from_pem(cert)
             except Exception:
                 # Erreur chargement PEM
-                return web.HTTPBadRequest()
+                return web.HTTPUnauthorized()
 
             # if verified != 'SUCCESS':
             #     # Reload le certificat complet (chaine) a partir de redis ou CorePki
@@ -488,26 +491,32 @@ class WebServerAuth(WebServer):
             #         return web.HTTPUnauthorized()
 
             # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
+            # try:
+            #     exchanges = enveloppe.get_exchanges
+            #     if exchanges is None:
+            #         return web.HTTPUnauthorized()
+            # except ExtensionNotFound:
+            #     # Verifier si c'est un certificat nginx (seule exception)
+            #     try:
+            #         roles = enveloppe.get_roles
+            #         if 'nginx' not in roles:
+            #             self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+            #             return web.HTTPUnauthorized()
+            #     except ExtensionNotFound:
+            #         self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+            #         return web.HTTPUnauthorized()
+
+            # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser client TLS
             try:
-                exchanges = enveloppe.get_exchanges
-                if exchanges is None:
-                    return web.HTTPUnauthorized()
-            except ExtensionNotFound:
-                # Verifier si c'est un certificat nginx (seule exception)
-                try:
-                    roles = enveloppe.get_roles
-                    if 'nginx' not in roles:
-                        self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
-                        return web.HTTPUnauthorized()
-                except ExtensionNotFound:
-                    self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
-                    return web.HTTPUnauthorized()
+                verifier_certificat_exchange(enveloppe)
+            except CertificatPasExchange:
+                return web.HTTPForbidden()
 
             return web.HTTPOk()
 
     async def verifier_usager_tls(self, request: Request):
         async with self.__semaphore_verifier_tls:
-            self.__logger.debug("TLS URL %s" % request.url)
+            self.__logger.debug("verifier_usager_tls URL %s" % request.url)
             for key, value in request.headers.items():
                 self.__logger.debug("TLS Header %s = %s" % (key, value))
 
@@ -528,17 +537,21 @@ class WebServerAuth(WebServer):
                 # Erreur chargement PEM
                 return web.HTTPBadRequest()
 
-            # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
-            # Verifier si c'est un certificat nginx (seule exception)
+            # try:
+            #     user_id = enveloppe.get_user_id
+            #     user_name = enveloppe.subject_common_name
+            #     if user_name is None or user_id is None:
+            #         self.__logger.debug("Certificat usager sans user_id - REFUSE")
+            #         return web.HTTPUnauthorized()
+            # except ExtensionNotFound:
+            #     self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
+            #     return web.HTTPUnauthorized()
+
+            # Verifier si on a un certificat usager (navigateur)
             try:
-                user_id = enveloppe.get_user_id
-                user_name = enveloppe.subject_common_name
-                if user_name is None or user_id is None:
-                    self.__logger.debug("Certificat usager sans user_id - REFUSE")
-                    return web.HTTPUnauthorized()
-            except ExtensionNotFound:
-                self.__logger.debug("Certificat sans exchanges et role != nginx - REFUSE")
-                return web.HTTPUnauthorized()
+                user_id, user_name = verifier_certificat_usager(enveloppe)
+            except CertificatPasUsager:
+                return web.HTTPForbidden()
 
             auth_status = '1'
             headers = {
@@ -549,6 +562,60 @@ class WebServerAuth(WebServer):
             }
 
             return web.HTTPOk(headers=headers)
+
+    async def verifier_any_tls(self, request: Request):
+        """
+        Permet un certificat systeme (avec exchanges) ou usager (avec role navigateur et user_id)
+        :param request:
+        :return:
+        """
+        async with self.__semaphore_verifier_tls:
+            self.__logger.debug("verifier_any_tls URL %s" % request.url)
+
+        async with self.__semaphore_verifier_tls:
+            self.__logger.debug("verifier_usager_tls URL %s" % request.url)
+            for key, value in request.headers.items():
+                self.__logger.debug("TLS Header %s = %s" % (key, value))
+
+            try:
+                verified = request.headers['VERIFIED']
+                if verified != 'SUCCESS':
+                    # Invalide - aurait du etre rejete par nginx
+                    return web.HTTPUnauthorized()
+                cert = request.headers['X-SSL-CERT']
+            except KeyError:
+                self.__logger.warning("Requete tls sans certificat : %s" % request.url)
+                return web.HTTPUnauthorized()
+
+            try:
+                cert = unquote(cert)
+                enveloppe = EnveloppeCertificat.from_pem(cert)
+            except Exception:
+                # Erreur chargement PEM
+                return web.HTTPUnauthorized()
+
+            # Seul un certificat systeme (avec au moins 1 exchange) peut utiliser TLS
+            # Verifier si c'est un certificat nginx (seule exception)
+            try:
+                user_id, user_name = verifier_certificat_usager(enveloppe)
+            except CertificatPasUsager:
+                pass
+            else:
+                auth_status = '1'
+                headers = {
+                    'Cache-Control': 'no-store',
+                    ConstantesWeb.HEADER_AUTH: auth_status,
+                    ConstantesWeb.HEADER_USER_ID: user_id,
+                    ConstantesWeb.HEADER_USER_NAME: user_name,
+                }
+                return web.HTTPOk(headers=headers)
+
+            try:
+                verifier_certificat_exchange(enveloppe)
+            except CertificatPasExchange:
+                return web.HTTPForbidden()
+            else:
+                return web.HTTPOk()
 
     def activer_session(self, session, user_id: str, nom_usager: str):
         self.__logger.debug("Activer session pour %s/%s" % (nom_usager, user_id))
@@ -617,3 +684,46 @@ class WebServerAuth(WebServer):
 
     async def supprimer_cookies_usager(self, user_id):
         return await self.__cookie_manager.supprimer_cookies_usager(user_id)
+
+
+def verifier_certificat_exchange(enveloppe: EnveloppeCertificat):
+    try:
+        exchanges = enveloppe.get_exchanges
+        if exchanges is None or len(exchanges) == 0:
+            raise CertificatPasExchange()
+        return True
+    except ExtensionNotFound:
+        # Verifier si c'est un certificat nginx (seule exception)
+        try:
+            roles = enveloppe.get_roles
+            if 'nginx' not in roles:
+                LOGGER.debug("Certificat sans exchanges et role != nginx - REFUSE")
+                raise CertificatPasExchange()
+            return True
+        except ExtensionNotFound:
+            LOGGER.debug("Certificat sans exchanges et role != nginx - REFUSE")
+            raise CertificatPasExchange()
+
+
+def verifier_certificat_usager(enveloppe: EnveloppeCertificat) -> (str, str):
+    try:
+        user_id = enveloppe.get_user_id
+        user_name = enveloppe.subject_common_name
+        roles = enveloppe.get_roles
+        if user_name is None or user_id is None:
+            LOGGER.debug("Certificat usager sans user_id - REFUSE")
+            raise CertificatPasUsager()
+        if 'navigateur' not in roles:
+            LOGGER.debug("Certificat usager sans role navigateur - REFUSE")
+            raise CertificatPasUsager()
+    except ExtensionNotFound:
+        LOGGER.debug("Certificat sans user_id/roles - REFUSE")
+        raise CertificatPasUsager()
+
+
+class CertificatPasUsager(Exception):
+    pass
+
+
+class CertificatPasExchange(Exception):
+    pass
