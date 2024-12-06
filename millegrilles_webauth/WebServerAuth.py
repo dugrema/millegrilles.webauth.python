@@ -4,8 +4,6 @@ import json
 import secrets
 from urllib.parse import urlparse, parse_qs, unquote
 
-from typing import Optional
-
 from aiohttp import web
 from aiohttp.web_request import Request
 from aiohttp_session import get_session
@@ -20,9 +18,8 @@ from millegrilles_messages.messages.EnveloppeCertificat import EnveloppeCertific
 from millegrilles_web.WebServer import WebServer
 from millegrilles_web import Constantes as ConstantesWeb
 from millegrilles_webauth import Constantes as ConstantesWebAuth
-from millegrilles_webauth.SessionCookieManager import SessionCookieManager
 from millegrilles_web.JwtUtils import get_headers, verify
-
+from millegrilles_webauth.WebauthManager import WebauthManager
 
 # DUREE_SESSION = 3_600 * 48
 DUREE_SESSION = 3_600
@@ -32,52 +29,39 @@ LOGGER = logging.getLogger(__name__)
 
 class WebServerAuth(WebServer):
 
-    def __init__(self, etat, commandes):
+    def __init__(self, manager: WebauthManager):
+        super().__init__(manager)
         self.__logger = logging.getLogger(__name__ + '.' + self.__class__.__name__)
-        super().__init__(ConstantesWebAuth.WEBAPP_PATH, etat, commandes, duree_session=DUREE_SESSION)
+        self.__manager = manager
 
         self.__semaphore_authentifier = asyncio.BoundedSemaphore(value=2)
         self.__semaphore_verifier_usager = asyncio.BoundedSemaphore(value=5)
         self.__semaphore_verifier_tls = asyncio.BoundedSemaphore(value=10)
-        self.__cookie_manager = None
 
-    def get_nom_app(self) -> str:
-        return ConstantesWebAuth.APP_NAME
-
-    async def setup(self, configuration: Optional[dict] = None, stop_event: Optional[asyncio.Event] = None):
-        await super().setup(configuration, stop_event)
-        redis_session = await self._connect_redis()
-        self.__cookie_manager = SessionCookieManager(redis_session, self._etat)
-        self._commandes.set_cookie_manager(self.__cookie_manager)
-
-    async def setup_socketio(self):
-        # Ne pas initialiser socket.io
-        pass
-
-    async def _preparer_routes(self):
-        self.__logger.info("Preparer routes %s sous /%s" % (self.__class__.__name__, self.get_nom_app()))
-        await super()._preparer_routes()
+    async def _prepare_routes(self):
+        self.__logger.info("Prepare routes %s under %s", self.__class__.__name__, self.__manager.application_path)
+        await super()._prepare_routes()
 
         # Routes usager
-        self.app.router.add_post(f'/auth/get_usager', self.get_usager),
-        self.app.router.add_post(f'/auth/authentifier_usager', self.authentifier_usager),
-        self.app.router.add_get(f'/auth/deconnecter_usager', self.deconnecter_usager),
-        self.app.router.add_get(f'/auth/verifier_usager', self.verifier_usager),
-        self.app.router.add_get(f'/auth/verifier_usager_noauth', self.verifier_usager_noauth),
+        self._app.router.add_post(f'/auth/get_usager', self.get_usager),
+        self._app.router.add_post(f'/auth/authentifier_usager', self.authentifier_usager),
+        self._app.router.add_get(f'/auth/deconnecter_usager', self.deconnecter_usager),
+        self._app.router.add_get(f'/auth/verifier_usager', self.verifier_usager),
+        self._app.router.add_get(f'/auth/verifier_usager_noauth', self.verifier_usager_noauth),
 
         # Routes client TLS (certificat x509)
-        self.app.router.add_get(f'/auth/verifier_client_tls', self.verifier_client_tls),
-        self.app.router.add_get(f'/auth/verifier_usager_tls', self.verifier_usager_tls),
-        self.app.router.add_get(f'/auth/verifier_any_tls', self.verifier_any_tls),
+        self._app.router.add_get(f'/auth/verifier_client_tls', self.verifier_client_tls),
+        self._app.router.add_get(f'/auth/verifier_usager_tls', self.verifier_usager_tls),
+        self._app.router.add_get(f'/auth/verifier_any_tls', self.verifier_any_tls),
 
         # Routes speciales
-        self.app.router.add_get(f'/auth/verifier_fuuid_jwt', self.verifier_fuuid_jwt),
+        self._app.router.add_get(f'/auth/verifier_fuuid_jwt', self.verifier_fuuid_jwt),
 
     async def get_usager(self, request: Request):
         async with self.__semaphore_authentifier:
 
             try:
-                producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
+                producer = await asyncio.wait_for(self.__manager.context.get_producer(), timeout=0.3)
             except TimeoutError:
                 self.__logger.error("MQ timeout (producer_wait)")
                 return web.HTTPServerError(text='MQ timeout (1)')
@@ -96,17 +80,17 @@ class WebServerAuth(WebServer):
 
             coros = list()
 
-            coros.append(producer.executer_requete(
+            coros.append(producer.request(
                 requete_usager,
-                domaine=Constantes.DOMAINE_CORE_MAITREDESCOMPTES, action='chargerUsager',
+                domain=Constantes.DOMAINE_CORE_MAITREDESCOMPTES, action='chargerUsager',
                 exchange=Constantes.SECURITE_PUBLIC
             ))
 
             if fingerprint_public_nouveau:
                 requete_fingperint = {'fingerprint_pk': fingerprint_public_nouveau}
-                coros.append(producer.executer_requete(
+                coros.append(producer.request(
                     requete_fingperint,
-                    domaine=Constantes.DOMAINE_CORE_PKI, action='certificatParPk',
+                    domain=Constantes.DOMAINE_CORE_PKI, action='certificatParPk',
                     exchange=Constantes.SECURITE_PUBLIC
                 ))
 
@@ -128,10 +112,9 @@ class WebServerAuth(WebServer):
             compte_usager = resultat_compte['compte']
             if compte_usager is None:
                 # Le compte est vide, retourner reponse directement
-                reponse_signee, correlation_id = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE,
-                                                                                             compte_usager)
+                reponse_signee, correlation_id = self.__manager.context.formatteur.signer_message(
+                    Constantes.KIND_REPONSE, compte_usager)
                 return web.json_response(reponse_signee)
-            # reponse_originale = compte_usager['__original']
 
             reponse_dict = dict()
 
@@ -153,7 +136,8 @@ class WebServerAuth(WebServer):
                 # Si session deja active
                 session_active = True
             else:
-                etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
+                # etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
+                etat_session = await self.__manager.open_cookie_session(request)
                 if etat_session is False:
                     session_active = False
                 elif nom_usager == etat_session.get('nomUsager'):
@@ -225,7 +209,8 @@ class WebServerAuth(WebServer):
                     pass  # OK
 
             # return web.json_response(reponse_originale)
-            reponse_signee, correlation_id = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE, reponse_dict)
+            reponse_signee, correlation_id = self.__manager.context.formatteur.signer_message(
+                Constantes.KIND_REPONSE, reponse_dict)
 
             return web.json_response(reponse_signee)
 
@@ -245,7 +230,7 @@ class WebServerAuth(WebServer):
 
             try:
                 # Extraire le contenu des params si c'est un message signe
-                enveloppe = await self.etat.validateur_message.verifier(params)
+                enveloppe = await self.__manager.context.validateur_message.verifier(params)
                 params = json.loads(params['contenu'])
                 signature_ok = True
             except (KeyError, PathValidationError, InvalidSignature):
@@ -310,8 +295,8 @@ class WebServerAuth(WebServer):
                         'reponseWebauthn': params,
                     }
 
-                    producer = await asyncio.wait_for(self.etat.producer_wait(), timeout=0.3)
-                    reponse_auth = await producer.executer_commande(
+                    producer = await asyncio.wait_for(self.__manager.context.get_producer(), timeout=0.3)
+                    reponse_auth = await producer.command(
                         commande, Constantes.DOMAINE_CORE_MAITREDESCOMPTES, 'authentifierWebauthn',
                         exchange=Constantes.SECURITE_PUBLIC)
 
@@ -332,14 +317,14 @@ class WebServerAuth(WebServer):
 
             if not reponse_dict:
                 # Acces refuse
-                reponse, correlation_id = self.etat.formatteur_message.signer_message(
+                reponse, correlation_id = self.__manager.context.formatteur.signer_message(
                     Constantes.KIND_REPONSE, {'ok': False, 'err': 'session non initialisee via get_usager'})
                 return web.json_response(reponse, status=401)
 
             self.activer_session(session, user_id, nom_usager)
 
             # Signer la reponse
-            reponse_signee, correlation = self.etat.formatteur_message.signer_message(Constantes.KIND_REPONSE, reponse_dict)
+            reponse_signee, correlation = self.__manager.context.formatteur.signer_message(Constantes.KIND_REPONSE, reponse_dict)
 
             response = web.json_response(reponse_signee)
 
@@ -353,7 +338,7 @@ class WebServerAuth(WebServer):
                     except (ValueError, KeyError):
                         duree_session = 86400
                     hostname = request.host
-                    expiration = datetime.datetime.utcnow() + datetime.timedelta(seconds=duree_session)
+                    expiration = datetime.datetime.now() + datetime.timedelta(seconds=duree_session)
                     cookie_session = {
                         'user_id': user_id,
                         'challenge': challenge_certificate,
@@ -364,7 +349,8 @@ class WebServerAuth(WebServer):
                     cookie_session = None  # Pas de cookie
 
             if cookie_session is not None:
-                await self.__cookie_manager.set_cookie(nom_usager, cookie_session, response)
+                # await self.__cookie_manager.set_cookie(nom_usager, cookie_session, response)
+                await self.__manager.set_cookie(nom_usager, cookie_session, response)
 
             return response
 
@@ -378,7 +364,7 @@ class WebServerAuth(WebServer):
 
             # Retirer cookie session
             response = web.HTTPTemporaryRedirect('/millegrilles', headers=headers)
-            await self.__cookie_manager.desactiver_cookie(request, response)
+            await self.__manager.deactivate_cookie(request, response)
 
             return response
 
@@ -428,7 +414,7 @@ class WebServerAuth(WebServer):
                     return web.HTTPForbidden(headers=headers_base)
 
             else:
-                etat_session = await self.__cookie_manager.ouvrir_session_cookie(request)
+                etat_session = await self.__manager.open_cookie_session(request)
                 if etat_session is False:
                     auth_status = '0'
                 elif isinstance(etat_session, dict):
@@ -662,7 +648,11 @@ class WebServerAuth(WebServer):
 
             # Charger le certificat
             try:
-                enveloppe = await self.etat.charger_certificat(fingerprint_certificat)
+                producer = await asyncio.wait_for(self.__manager.context.get_producer(), 1)
+                enveloppe = await self.__manager.context.verificateur_certificats.fetch_certificat(
+                    fingerprint_certificat, producer)
+            except asyncio.CancelledError as e:
+                raise e
             except Exception as e:
                 self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (fingerprint_certificat, str(e)))
                 return web.HTTPUnauthorized(headers=headers_base)
@@ -681,9 +671,6 @@ class WebServerAuth(WebServer):
                 self.__logger.debug("Erreur chargement certificat fingerprint %s : %s " % (
                     fingerprint_certificat, str(e)))
                 return web.HTTPUnauthorized(headers=headers_base)
-
-    async def supprimer_cookies_usager(self, user_id):
-        return await self.__cookie_manager.supprimer_cookies_usager(user_id)
 
 
 def verifier_certificat_exchange(enveloppe: EnveloppeCertificat):

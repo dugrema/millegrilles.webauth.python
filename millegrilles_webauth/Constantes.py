@@ -20,4 +20,5 @@ SESSION_WEBAUTH_CREDENTIAL_COUNT = 'webauth_credentials_count'
 REPONSE_DELEGATIONS_DATE = 'delegations_date'
 REPONSE_DELEGATIONS_VERSION = 'delegations_version'
 
+REDIS_COOKIE_SECRET = 'webauth.cookies.secret'
 COOKIE_MG_SESSION = 'mgsession'

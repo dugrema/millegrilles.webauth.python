@@ -1,8 +1,8 @@
-FROM docker.maple.maceroc.com:5000/millegrilles_web_python:2024.5.22
+FROM docker.maple.maceroc.com:5000/millegrilles_web_python:2024.9.47
 
-ENV CA_PEM=/var/opt/millegrilles/configuration/pki.millegrille.cert \
-    CERT_PEM=/var/opt/millegrilles/secrets/pki.webauth.cert \
-    KEY_PEM=/var/opt/millegrilles/secrets/pki.webauth.cle \
+ENV CA_PATH=/var/opt/millegrilles/configuration/pki.millegrille.cert \
+    CERT_PATH=/var/opt/millegrilles/secrets/pki.webauth.cert \
+    KEY_PATH=/var/opt/millegrilles/secrets/pki.webauth.cle \
     MQ_HOSTNAME=mq \
     MQ_PORT=5673 \
     REDIS_HOSTNAME=redis \
