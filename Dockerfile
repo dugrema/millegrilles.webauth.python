@@ -1,4 +1,4 @@
-FROM docker.maple.maceroc.com:5000/millegrilles_web_python:2024.9.50
+FROM registry.millegrilles.com/millegrilles/messages_python:2025.4.104 as stage1
 
 ENV CA_PATH=/var/opt/millegrilles/configuration/pki.millegrille.cert \
     CERT_PATH=/var/opt/millegrilles/secrets/pki.webauth.cert \
