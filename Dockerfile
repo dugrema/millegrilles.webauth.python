@@ -1,4 +1,4 @@
-FROM registry.millegrilles.com/millegrilles/messages_python:2025.4.104 as stage1
+FROM registry.millegrilles.com/millegrilles/web_python:2025.4.57 as stage1
 
 ENV CA_PATH=/var/opt/millegrilles/configuration/pki.millegrille.cert \
     CERT_PATH=/var/opt/millegrilles/secrets/pki.webauth.cert \
